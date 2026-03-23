@@ -3,9 +3,14 @@ Environment Component
 Manages interaction with the Pong game server
 """
 
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
-from ..client import PongEnvSync, PongEnvClient
-from ..models import PongAction
+from client import PongEnvSync, PongEnvClient
+from models import PongAction
 
 
 class PongEnvironment:
@@ -20,16 +25,21 @@ class PongEnvironment:
         """
         self.server_url = server_url
         self.env = None
+        self._ctx = None
 
     def __enter__(self):
         """Context manager entry"""
-        self.env = PongEnvSync(PongEnvClient(self.server_url)).sync().__enter__()
+        # Store the context manager (_SyncContextManager) separately
+        self._ctx = PongEnvSync(PongEnvClient(self.server_url)).sync()
+        # __enter__ returns _SyncEnvProxy — used for reset() and step()
+        self.env = self._ctx.__enter__()
         return self
 
     def __exit__(self, *args):
         """Context manager exit"""
-        if self.env:
-            self.env.__exit__(*args)
+        # Call __exit__ on the context manager, not the proxy
+        if self._ctx:
+            self._ctx.__exit__(*args)
 
     def reset(self):
         """Reset environment and return initial state"""
@@ -75,13 +85,10 @@ class PongEnvironment:
             obs.player_score / 11.0,
             obs.ai_score / 11.0,
             (obs.player_y - obs.ball_y) / 20.0,
-        ], dtype=np.float32)
+            ], dtype=np.float32)
 
         return state
 
     def get_observation_dict(self):
         """Get full observation (for visualization, etc.)"""
-        # This would require keeping track of obs
-        # Can be enhanced as needed
         pass
-
