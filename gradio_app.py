@@ -10,8 +10,10 @@ Usage:
 """
 
 import argparse
+import os
 import time
 import numpy as np
+import torch
 from PIL import Image, ImageDraw
 
 import gradio as gr
@@ -155,8 +157,32 @@ def play_game_realtime(
             time.sleep(0.03)
         return
 
-    try:
+    def _load_agent_for_inference() -> tuple:
         agent = DQNAgent(state_size=9, action_size=3)
+        checkpoint_path = os.path.join("checkpoints", "best_dqn.pt")
+
+        if not os.path.exists(checkpoint_path):
+            agent.epsilon = 0.0
+            return agent, "⚠️ No checkpoint found (`checkpoints/best_dqn.pt`) — using untrained policy."
+
+        checkpoint = torch.load(checkpoint_path, map_location=agent.device)
+        state_dict = checkpoint.get("state_dict", checkpoint)
+        agent.q_network.load_state_dict(state_dict)
+        agent.target_network.load_state_dict(agent.q_network.state_dict())
+        agent.q_network.eval()
+        agent.target_network.eval()
+        agent.epsilon = 0.0
+
+        best_seed = checkpoint.get("seed", "?") if isinstance(checkpoint, dict) else "?"
+        best_score = checkpoint.get("moving_avg_reward_50", None) if isinstance(checkpoint, dict) else None
+        if isinstance(best_score, (int, float)):
+            status = f"✅ Loaded trained checkpoint (seed={best_seed}, moving_avg_50={best_score:.2f})"
+        else:
+            status = f"✅ Loaded trained checkpoint (seed={best_seed})"
+        return agent, status
+
+    try:
+        agent, model_status = _load_agent_for_inference()
 
         with PongEnvSync(PongEnvClient(server_url)).sync() as env:
             obs = env.reset()
@@ -175,6 +201,7 @@ def play_game_realtime(
                 live_stats = (
                     "### Live game\n"
                     f"| | |\n|---|---|\n"
+                    f"| Model | {model_status} |\n"
                     f"| Step | {steps_played} / {num_steps} |\n"
                     f"| Reward so far | {total_reward:.1f} |\n"
                     f"| Score | YOU **{obs.player_score}** – AI **{obs.ai_score}** |\n"
@@ -190,6 +217,7 @@ def play_game_realtime(
         final_stats = (
             "### Game results\n"
             f"| | |\n|---|---|\n"
+            f"| Model | {model_status} |\n"
             f"| Steps played | {steps_played} |\n"
             f"| Total reward | {total_reward:.1f} |\n"
             f"| Score | YOU **{obs.player_score}** – AI **{obs.ai_score}** |\n"
