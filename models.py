@@ -16,7 +16,7 @@ class PongAction(BaseModel):
 
 class PongObservation(BaseModel):
     """Observation: what the environment returns"""
-    board: str = Field(description="ASCII board state (20x40)")
+    board: str = Field(description="ASCII board state (40x40)")
     player_score: int
     ai_score: int
     ball_x: float

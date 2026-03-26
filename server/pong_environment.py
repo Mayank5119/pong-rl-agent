@@ -11,13 +11,13 @@ class PongGame:
     """Core Pong game logic"""
 
     BOARD_WIDTH = 40
-    BOARD_HEIGHT = 20
-    PADDLE_HEIGHT = 4
+    BOARD_HEIGHT = 40
+    PADDLE_HEIGHT = 3
     BALL_SIZE = 1
 
     BALL_SPEED = 0.3
-    PADDLE_SPEED = 1
     AI_SPEED = 0.4
+    PADDLE_SPEED = 2
 
     def __init__(self, seed: int = None):
         if seed is not None:
@@ -80,7 +80,7 @@ class PongGame:
             self.ball_vx = -self.ball_vx * 1.05
             hit_pos = (self.ball_y - self.player_y) / self.PADDLE_HEIGHT
             self.ball_vy += (hit_pos - 0.5) * 0.3
-            reward += 1
+            reward += 0.2
 
         # Ball collision with AI paddle (right side)
         if (self.ball_x > self.BOARD_WIDTH - 3 and
@@ -93,16 +93,16 @@ class PongGame:
         # Ball out of bounds - left side (AI scores)
         if self.ball_x < 0:
             self.ai_score += 1
-            reward -= 1
+            reward -= 3
             self._reset_ball()
 
         # Ball out of bounds - right side (player scores)
         if self.ball_x > self.BOARD_WIDTH:
             self.player_score += 1
-            reward += 2
+            reward += 5
             self._reset_ball()
 
-        done = self.player_score >= 11 or self.ai_score >= 11
+        done = self.player_score >= 7 or self.ai_score >= 7
 
         return self._get_state(), reward, done
 

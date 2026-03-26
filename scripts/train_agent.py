@@ -2,6 +2,11 @@
 Train: Run DQN training
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from components.training import train_dqn_agent
 
 
@@ -16,8 +21,8 @@ if __name__ == "__main__":
 
     # Train agent
     agent, rewards, losses = train_dqn_agent(
-        episodes=100,
-        max_steps=500,
+        episodes=1000,
+        max_steps=2000,
         verbose=True
     )
 

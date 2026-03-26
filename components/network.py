@@ -15,12 +15,17 @@ class QNetwork(nn.Module):
         Input (9) → Dense(128) → ReLU → Dense(128) → ReLU → Output(3)
     """
 
-    def __init__(self, state_size: int = 9, action_size: int = 3, hidden_size: int = 128):
+    def __init__(
+        self,
+        state_size: int = 9,
+        action_size: int = 3,
+        hidden_sizes: tuple[int, int] = (128, 128),
+    ):
         """
         Args:
             state_size: Number of state features
             action_size: Number of possible actions
-            hidden_size: Number of neurons in hidden layers
+            hidden_sizes: Number of neurons in hidden layers
         """
         super(QNetwork, self).__init__()
 
@@ -28,9 +33,9 @@ class QNetwork(nn.Module):
         self.action_size = action_size
 
         # Network layers
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, action_size)
+        self.fc1 = nn.Linear(state_size, hidden_sizes[0])
+        self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+        self.fc3 = nn.Linear(hidden_sizes[1], action_size)
 
         # Activation
         self.relu = nn.ReLU()

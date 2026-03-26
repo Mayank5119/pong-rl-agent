@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import time
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -40,7 +41,7 @@ class PongGameVisualizer:
     """Renders a PongObservation as a PIL image."""
 
     @staticmethod
-    def render(obs, width: int = 400, height: int = 200, scale: int = 4) -> Image.Image:
+    def render(obs, width: int = 40, height: int = 40, scale: int = 10) -> Image.Image:
         """
         Convert a game observation into a pixel-art style image.
 
@@ -69,23 +70,28 @@ class PongGameVisualizer:
         draw.text((W // 4 - 6, 12), str(obs.player_score), fill=(0, 210, 255))
         draw.text((3 * W // 4 - 6, 12), str(obs.ai_score), fill=(255, 80, 80))
 
-        paddle_h = 4 * scale
-        paddle_w = 2 * scale
+        paddle_h = 3 * scale
+        paddle_w = max(2, scale // 2)
+
+        player_x = 0
+        ai_x = max(0, width - 1)
 
         # ── Player paddle (left, cyan) ───────────────────────────────────────
         py = int(obs.player_y * scale)
-        draw.rectangle([(4, py), (4 + paddle_w, py + paddle_h)], fill=(0, 210, 255))
+        px = int(player_x * scale)
+        draw.rectangle([(px, py), (px + paddle_w, py + paddle_h)], fill=(0, 210, 255))
 
         # ── AI paddle (right, red) ───────────────────────────────────────────
         ay = int(obs.ai_y * scale)
+        ax = int(ai_x * scale)
         draw.rectangle(
-            [(W - 4 - paddle_w, ay), (W - 4, ay + paddle_h)], fill=(255, 80, 80)
+            [(ax - paddle_w, ay), (ax, ay + paddle_h)], fill=(255, 80, 80)
         )
 
         # ── Ball (white with soft halo) ──────────────────────────────────────
-        bx = int(obs.ball_x * scale)
-        by = int(obs.ball_y * scale)
-        r = 3 * scale
+        bx = int(np.clip(obs.ball_x, 0, width - 1) * scale)
+        by = int(np.clip(obs.ball_y, 0, height - 1) * scale)
+        r = max(2, scale // 3)
         draw.ellipse([(bx - r - 2, by - r - 2), (bx + r + 2, by + r + 2)], fill=(80, 80, 100))
         draw.ellipse([(bx - r, by - r), (bx + r, by + r)], fill=(255, 255, 255))
 
@@ -118,7 +124,7 @@ class _MockObs:
 # Core play function — single definition, no duplication
 # ---------------------------------------------------------------------------
 
-def play_game(
+def play_game_realtime(
         num_steps: int,
         server_url: str = "ws://localhost:8000/ws/client",
 ) -> tuple:
@@ -132,17 +138,22 @@ def play_game(
         num_steps:  How many game steps to simulate.
         server_url: WebSocket URL of the Pong game server.
 
-    Returns:
+    Yields:
         (frame: PIL.Image, stats_markdown: str)
     """
     if not HAS_AGENT or not HAS_CLIENT:
-        obs = _MockObs()
-        frame = PongGameVisualizer.render(obs)
-        return frame, (
-            "### Demo mode\n"
-            "_`train_dqn` or `models` not found — showing a random frame._\n\n"
-            f"Score: YOU **{obs.player_score}** – AI **{obs.ai_score}**"
-        )
+        for step in range(min(num_steps, 120)):
+            obs = _MockObs()
+            frame = PongGameVisualizer.render(obs)
+            stats = (
+                "### Demo mode (real-time preview)\n"
+                "_`train_dqn` or `models` not found — streaming random frames._\n\n"
+                f"Frame: **{step + 1}** / {num_steps}  \n"
+                f"Score: YOU **{obs.player_score}** – AI **{obs.ai_score}**"
+            )
+            yield frame, stats
+            time.sleep(0.03)
+        return
 
     try:
         agent = DQNAgent(state_size=9, action_size=3)
@@ -159,11 +170,24 @@ def play_game(
                 obs, reward, done = env.step(PongAction(action=action_name))
                 total_reward += reward
                 steps_played = step + 1
+
+                frame = PongGameVisualizer.render(obs)
+                live_stats = (
+                    "### Live game\n"
+                    f"| | |\n|---|---|\n"
+                    f"| Step | {steps_played} / {num_steps} |\n"
+                    f"| Reward so far | {total_reward:.1f} |\n"
+                    f"| Score | YOU **{obs.player_score}** – AI **{obs.ai_score}** |\n"
+                    f"| Exploration (ε) | {agent.epsilon:.3f} |"
+                )
+                yield frame, live_stats
+                time.sleep(0.03)
+
                 if done:
                     break
 
-        frame = PongGameVisualizer.render(obs)
-        stats = (
+        final_frame = PongGameVisualizer.render(obs)
+        final_stats = (
             "### Game results\n"
             f"| | |\n|---|---|\n"
             f"| Steps played | {steps_played} |\n"
@@ -171,7 +195,8 @@ def play_game(
             f"| Score | YOU **{obs.player_score}** – AI **{obs.ai_score}** |\n"
             f"| Exploration (ε) | {agent.epsilon:.3f} |"
         )
-        return frame, stats
+        yield final_frame, final_stats
+        return
 
     except Exception as exc:
         obs = _MockObs()
@@ -183,7 +208,8 @@ def play_game(
             "```\ndocker run -p 8000:8000 pong-server\n```\n\n"
             f"Showing a random frame. Score: YOU **{obs.player_score}** – AI **{obs.ai_score}**"
         )
-        return frame, stats
+        yield frame, stats
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +227,9 @@ def create_dashboard(server_url: str = "ws://localhost:8000/ws/client") -> gr.Bl
         gr.Blocks instance (call .launch() to start).
     """
 
+    def play_with_server(num_steps: int):
+        yield from play_game_realtime(num_steps=num_steps, server_url=server_url)
+
     with gr.Blocks(
             title="Pong RL Agent",
             theme=gr.themes.Soft(primary_hue="cyan"),
@@ -216,13 +245,13 @@ def create_dashboard(server_url: str = "ws://localhost:8000/ws/client") -> gr.Bl
             # ── Tab 1 · Play ─────────────────────────────────────────────────
             with gr.Tab("Play game"):
                 gr.Markdown(
-                    "Adjust the slider, then click **Play** to watch the agent."
+                    "Adjust the slider, then click **Play** to watch the agent in real time."
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
                         num_steps_slider = gr.Slider(
                             minimum=10,
-                            maximum=500,
+                            maximum=2000,
                             value=100,
                             step=10,
                             label="Steps to simulate",
@@ -238,15 +267,15 @@ def create_dashboard(server_url: str = "ws://localhost:8000/ws/client") -> gr.Bl
                             height=420,
                         )
 
-                # FIX: outputs list now matches the 2-tuple returned by play_game
+                # Stream frames in real time while the episode is being simulated
                 play_btn.click(
-                    fn=lambda steps: play_game(steps, server_url),
+                    fn=play_with_server,
                     inputs=[num_steps_slider],
                     outputs=[game_frame, result_md],
                 )
 
                 gr.Examples(
-                    examples=[[50], [150], [300], [500]],
+                    examples=[[50], [150], [500], [1000], [1500], [2000]],
                     inputs=[num_steps_slider],
                     label="Presets",
                 )
@@ -260,22 +289,18 @@ def create_dashboard(server_url: str = "ws://localhost:8000/ws/client") -> gr.Bl
 
 | Layer | Type | Size |
 |-------|------|------|
-| Input | State vector | 9 features |
+| Input | Feature vector | 9 features |
 | FC 1 | Linear + ReLU | 128 neurons |
 | FC 2 | Linear + ReLU | 128 neurons |
 | Output | Q-values | 3 actions |
 
-**Input features (9)**
+**Input representation**
 
-1. Ball X position (normalised)
-2. Ball Y position (normalised)
-3. Ball X velocity
-4. Ball Y velocity
-5. Player paddle Y
-6. AI paddle Y
-7. Player score
-8. AI score
-9. Paddle-to-ball Y distance
+- Ball position: `ball_x`, `ball_y`
+- Ball velocity: `ball_vx`, `ball_vy`
+- Paddle positions: `player_y`, `ai_y`
+- Relative distances: `player_y - ball_y`, `ai_y - ball_y`
+- Score context: `player_score - ai_score`
 
 **Actions (3):** `UP` · `DOWN` · `STAY`
 """)
@@ -287,20 +312,24 @@ def create_dashboard(server_url: str = "ws://localhost:8000/ws/client") -> gr.Bl
 |-----------|-------|
 | Algorithm | DQN |
 | Optimiser | Adam |
-| Learning rate | 0.001 |
-| Discount γ | 0.99 |
-| Replay buffer | 10 000 |
-| Batch size | 32 |
+| Learning rate | 0.0003 |
+| Discount γ | 0.995 |
+| Replay buffer | 100 000 |
+| Batch size | 128 |
 | ε start | 1.0 |
-| ε min | 0.01 |
-| ε decay | 0.995 |
-| Target net sync | Every 10 eps |
+| ε min | 0.05 |
+| ε schedule | Linear over 100k steps |
+| Warmup | 5 000 steps |
+| Train frequency | Every 4 steps |
+| Target update | Soft, τ = 0.005 |
+| Gradient clip | 10.0 |
 
 **Reward shaping**
 
 - +1 for hitting the ball
 - +2 for scoring a point
 - −1 for missing the ball
+- Reward clipped to [-5, 5] for stability
 """)
 
             # ── Tab 3 · How it works ─────────────────────────────────────────
@@ -352,39 +381,15 @@ Q*(s, a) = r  +  γ · max_a′ Q*(s′, a′)
             # ── Tab 4 · Hub & deploy ─────────────────────────────────────────
             with gr.Tab("Hub & deploy"):
                 gr.Markdown("""
-## Sharing with Hugging Face Hub
+## Lean setup note
 
-**Upload a trained model**
+This workspace is trimmed to the local training + dashboard flow:
 
-```python
-from components.hub import HFHubManager
+1. Run Docker server
+2. Run `python scripts/train_agent.py`
+3. Run `python gradio_app.py`
 
-manager = HFHubManager("your-username/pong-dqn")
-save_dir = manager.save_model(agent, version="v1",
-                              description="DQN after 100 episodes")
-manager.create_model_card(save_dir, description="...")
-manager.push_to_hub(save_dir, commit_message="Upload v1")
-```
-
-**Load it back**
-
-```python
-agent = manager.load_model_from_hub(DQNAgent)
-```
-
-**Deploy on HF Spaces**
-
-1. Create a Space at huggingface.co/new-space and select **Gradio**.
-2. Upload this file as `app.py`.
-3. Add your `requirements.txt`.
-4. Set `HF_TOKEN` as a repository secret.
-
-**Push from the command line**
-
-```bash
-export HF_TOKEN=hf_xxxxxxxxxx
-python hub_agent.py --repo your-username/pong-dqn --push
-```
+Hugging Face Hub helper scripts/components were removed from this setup.
 """)
 
             # ── Tab 5 · Quick start ──────────────────────────────────────────
@@ -401,14 +406,10 @@ docker build -t pong-server .
 docker run -p 8000:8000 pong-server
 
 # 3. Train the agent
-python train_agent.py
+python scripts/train_agent.py
 
 # 4. Launch this dashboard
 python gradio_app.py
-
-# 5. (Optional) push your model to the Hub
-export HF_TOKEN=hf_xxxxx
-python hub_agent.py --repo your-name/pong-dqn --push
 ```
 
 ## Project layout
@@ -420,19 +421,19 @@ pong-rl/
 │   ├── network.py        ← QNetwork (PyTorch nn.Module)
 │   ├── environment.py    ← PongEnvironment wrapper
 │   ├── training.py       ← train_dqn_agent() loop
-│   ├── hub.py            ← HFHubManager
-│   └── app.py            ← Gradio component (used by deploy_app.py)
+│   └── __init__.py
 ├── server/
 │   ├── app.py            ← FastAPI + WebSocket server
 │   └── pong_environment.py
 ├── gradio_app.py         ← this file (standalone dashboard)
-├── train_agent.py        ← run training
-├── hub_agent.py          ← hub operations
+├── scripts/train_agent.py ← run training
 ├── client.py             ← WebSocket client
-└── Dockerfile
+├── models.py
+└── requirements.txt
 ```
 """)
 
+    demo.queue()
     return demo
 
 

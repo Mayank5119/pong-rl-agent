@@ -16,18 +16,17 @@ from models import PongAction
 class QNetwork(nn.Module):
     """Deep Q-Network: learns to map game states to action values"""
 
-    def __init__(self, state_size=9, action_size=3, hidden_size=128):
+    def __init__(self, state_size=9, action_size=3, hidden_sizes=(128, 128)):
         """
         Args:
-            state_size: Size of state input (ball_x, ball_y, ball_vx, ball_vy,
-                       player_y, ai_y, player_score, ai_score, etc.)
+            state_size: Size of compact feature input (9)
             action_size: Number of actions (UP=0, DOWN=1, STAY=2)
-            hidden_size: Size of hidden layers
+            hidden_sizes: Size of hidden layers
         """
         super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, action_size)
+        self.fc1 = nn.Linear(state_size, hidden_sizes[0])
+        self.fc2 = nn.Linear(hidden_sizes[0], hidden_sizes[1])
+        self.fc3 = nn.Linear(hidden_sizes[1], action_size)
         self.relu = nn.ReLU()
 
     def forward(self, state):
@@ -40,33 +39,44 @@ class QNetwork(nn.Module):
 class DQNAgent:
     """Deep Q-Network Agent for Pong"""
 
-    def __init__(self, state_size=9, action_size=3, learning_rate=0.001):
+    def __init__(self, state_size=9, action_size=3, learning_rate=3e-4):
         self.state_size = state_size
         self.action_size = action_size
         self.learning_rate = learning_rate
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Q-Networks (current and target)
-        self.q_network = QNetwork(state_size, action_size)
-        self.target_network = QNetwork(state_size, action_size)
+        self.q_network = QNetwork(state_size, action_size).to(self.device)
+        self.target_network = QNetwork(state_size, action_size).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
 
         # Optimizer and loss
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.SmoothL1Loss()
 
         # Experience replay buffer
-        self.memory = deque(maxlen=10000)
+        self.memory = deque(maxlen=100000)
 
         # Hyperparameters
-        self.gamma = 0.99  # Discount factor
-        self.epsilon = 1.0  # Exploration rate
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
-        self.batch_size = 32
+        self.gamma = 0.995
+        self.batch_size = 128
+        self.reward_clip_min = -5.0
+        self.reward_clip_max = 5.0
+        self.max_grad_norm = 10.0
+        self.tau = 0.005
+        self.train_frequency = 4
+        self.warmup_steps = 5000
+
+        self.epsilon_start = 1.0
+        self.epsilon_end = 0.05
+        self.epsilon_decay_steps = 100000
+        self.epsilon = self.epsilon_start
+        self.total_steps = 0
 
     def remember(self, state, action, reward, next_state, done):
         """Store experience in replay buffer"""
-        self.memory.append((state, action, reward, next_state, done))
+        clipped_reward = float(np.clip(reward, self.reward_clip_min, self.reward_clip_max))
+        self.memory.append((state, action, clipped_reward, next_state, done))
 
     def choose_action(self, state):
         """
@@ -80,9 +90,29 @@ class DQNAgent:
         else:
             # Exploit: use network
             with torch.no_grad():
-                state_tensor = torch.FloatTensor(state)
+                state_tensor = torch.FloatTensor(state).to(self.device)
                 q_values = self.q_network(state_tensor)
-                return np.argmax(q_values.numpy())
+                return int(torch.argmax(q_values).item())
+
+    def _soft_update_target_network(self):
+        for target_param, local_param in zip(self.target_network.parameters(), self.q_network.parameters()):
+            target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
+
+    def _update_epsilon(self):
+        progress = min(1.0, self.total_steps / float(self.epsilon_decay_steps))
+        self.epsilon = self.epsilon_start + progress * (self.epsilon_end - self.epsilon_start)
+
+    def process_step(self, state, action, reward, next_state, done):
+        self.remember(state, action, reward, next_state, done)
+        self.total_steps += 1
+        self._update_epsilon()
+
+        if self.total_steps < self.warmup_steps:
+            return None
+        if self.total_steps % self.train_frequency != 0:
+            return None
+
+        return self.train()
 
     def train(self, batch_size=None):
         """Train network using experience replay"""
@@ -96,11 +126,11 @@ class DQNAgent:
         batch = random.sample(self.memory, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        states = torch.FloatTensor(np.array(states))
-        actions = torch.LongTensor(actions)
-        rewards = torch.FloatTensor(rewards)
-        next_states = torch.FloatTensor(np.array(next_states))
-        dones = torch.FloatTensor(dones)
+        states = torch.FloatTensor(np.array(states)).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
+        dones = torch.FloatTensor(dones).to(self.device)
 
         # Current Q-values
         q_values = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
@@ -114,7 +144,9 @@ class DQNAgent:
         loss = self.loss_fn(q_values, target_q_values)
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), self.max_grad_norm)
         self.optimizer.step()
+        self._soft_update_target_network()
 
         return loss.item()
 
@@ -123,27 +155,26 @@ class DQNAgent:
         self.target_network.load_state_dict(self.q_network.state_dict())
 
     def decay_epsilon(self):
-        """Reduce exploration rate over time"""
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        """Compatibility shim (epsilon now updates per-step linearly)"""
+        self._update_epsilon()
 
 
 def extract_state(obs):
     """Convert observation to state vector for network input"""
-    state = np.array([
-        obs.ball_x / 40.0,           # Normalize to 0-1
-        obs.ball_y / 20.0,
+    return np.array([
+        obs.ball_x / 40.0,
+        obs.ball_y / 40.0,
         obs.ball_vx / 0.4,
         obs.ball_vy / 0.3,
-        obs.player_y / 20.0,
-        obs.ai_y / 20.0,
-        obs.player_score / 11.0,
-        obs.ai_score / 11.0,
-        (obs.player_y - obs.ball_y) / 20.0,  # Relative distance
+        obs.player_y / 40.0,
+        obs.ai_y / 40.0,
+        (obs.player_y - obs.ball_y) / 40.0,
+        (obs.ai_y - obs.ball_y) / 40.0,
+        (obs.player_score - obs.ai_score) / 7.0,
     ], dtype=np.float32)
-    return state
 
 
-def train_dqn_agent(episodes=100, max_steps=500, server_url="ws://localhost:8000/ws/client"):
+def train_dqn_agent(episodes=1000, max_steps=2000, server_url="ws://localhost:8000/ws/client"):
     """
     Train DQN agent using real neural network learning
 
@@ -181,11 +212,7 @@ def train_dqn_agent(episodes=100, max_steps=500, server_url="ws://localhost:8000
                 obs, reward, done = env.step(PongAction(action=action_name))
                 next_state = extract_state(obs)
 
-                # Store experience in replay buffer
-                agent.remember(state, action_idx, reward, next_state, done)
-
-                # Train network on batch from replay buffer
-                loss = agent.train()
+                loss = agent.process_step(state, action_idx, reward, next_state, done)
                 if loss is not None:
                     episode_loss += loss
 
@@ -195,13 +222,6 @@ def train_dqn_agent(episodes=100, max_steps=500, server_url="ws://localhost:8000
 
                 if done:
                     break
-
-            # Update target network every 10 episodes
-            if (episode + 1) % 10 == 0:
-                agent.update_target_network()
-
-            # Decay exploration rate
-            agent.decay_epsilon()
 
             episode_rewards.append(episode_reward)
             episode_losses.append(episode_loss / max(step_count, 1))
@@ -234,7 +254,7 @@ def train_dqn_agent(episodes=100, max_steps=500, server_url="ws://localhost:8000
 
 if __name__ == "__main__":
     # Train the DQN agent
-    agent, rewards, losses = train_dqn_agent(episodes=100, max_steps=500)
+    agent, rewards, losses = train_dqn_agent(episodes=1000, max_steps=2000)
 
     print("\n✅ Training complete! Agent saved in memory.")
     print("You can now use this agent to play games or continue training.")

@@ -16,6 +16,9 @@ from models import PongAction
 class PongEnvironment:
     """Wrapper for Pong game environment"""
 
+    BOARD_WIDTH = 40
+    BOARD_HEIGHT = 40
+
     def __init__(self, server_url: str = "ws://localhost:8000/ws/client"):
         """
         Initialize environment
@@ -73,21 +76,19 @@ class PongEnvironment:
             obs: Observation from environment
 
         Returns:
-            Normalized state vector (9 features)
+            Compact normalized feature vector (9 values)
         """
-        state = np.array([
+        return np.array([
             obs.ball_x / 40.0,
-            obs.ball_y / 20.0,
+            obs.ball_y / 40.0,
             obs.ball_vx / 0.4,
             obs.ball_vy / 0.3,
-            obs.player_y / 20.0,
-            obs.ai_y / 20.0,
-            obs.player_score / 11.0,
-            obs.ai_score / 11.0,
-            (obs.player_y - obs.ball_y) / 20.0,
-            ], dtype=np.float32)
-
-        return state
+            obs.player_y / 40.0,
+            obs.ai_y / 40.0,
+            (obs.player_y - obs.ball_y) / 40.0,
+            (obs.ai_y - obs.ball_y) / 40.0,
+            (obs.player_score - obs.ai_score) / 7.0,
+        ], dtype=np.float32)
 
     def get_observation_dict(self):
         """Get full observation (for visualization, etc.)"""
